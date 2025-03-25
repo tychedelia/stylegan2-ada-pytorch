@@ -25,12 +25,22 @@ verbosity = 'brief' # Verbosity level: 'none', 'brief', 'full'
 #----------------------------------------------------------------------------
 # Internal helper funcs.
 
+extra_includes = [
+    r"C:\Program Files\Derivative\TouchDesigner\Samples\CPlusPlus\3rdParty\Python\Include",
+    r"C:\Program Files\Derivative\TouchDesigner\Samples\CPlusPlus\3rdParty\Python\Include\PC",
+]
+
+extra_link_args = [
+    # e.g. if your python311.lib is in that “Libs” folder
+    '/LIBPATH:C:\\Program Files\\Derivative\\TouchDesigner\\Samples\\CPlusPlus\\3rdParty\\Python\\lib\\x64',
+]
+
 def _find_compiler_bindir():
     patterns = [
-        'C:/Program Files (x86)/Microsoft Visual Studio/*/Professional/VC/Tools/MSVC/*/bin/Hostx64/x64',
-        'C:/Program Files (x86)/Microsoft Visual Studio/*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64',
-        'C:/Program Files (x86)/Microsoft Visual Studio/*/Community/VC/Tools/MSVC/*/bin/Hostx64/x64',
-        'C:/Program Files (x86)/Microsoft Visual Studio */vc/bin',
+        'C:/Program Files*/Microsoft Visual Studio/*/Professional/VC/Tools/MSVC/*/bin/Hostx64/x64',
+        'C:/Program Files*/Microsoft Visual Studio/*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64',
+        'C:/Program Files*/Microsoft Visual Studio/*/Community/VC/Tools/MSVC/*/bin/Hostx64/x64',
+        'C:/Program Files*/Microsoft Visual Studio */vc/bin',
     ]
     for pattern in patterns:
         matches = sorted(glob.glob(pattern))
@@ -56,10 +66,37 @@ def get_plugin(module_name, sources, **build_kwargs):
     elif verbosity == 'brief':
         print(f'Setting up PyTorch plugin "{module_name}"... ', end='', flush=True)
 
+    # Check for environment variable to use pre-compiled extension
+    use_precompiled = os.environ.get('USE_PRECOMPILED_STYLEGAN_EXTENSIONS', '0') == '1'
+    
+    if use_precompiled:
+        try:
+            # Try direct import first (assumes module is already in Python path)
+            if verbosity == 'brief' or verbosity == 'full':
+                print(f"Attempting to use pre-compiled extension for {module_name}...")
+            
+            module = importlib.import_module(module_name)
+            
+            # Print status and add to cache.
+            if verbosity == 'full':
+                print(f'Successfully loaded pre-compiled plugin "{module_name}".')
+            elif verbosity == 'brief':
+                print('Successfully loaded pre-compiled plugin.')
+                
+            _cached_plugins[module_name] = module
+            return module
+            
+        except ImportError as e:
+            if verbosity == 'brief' or verbosity == 'full':
+                print(f"Could not import pre-compiled extension: {e}")
+            raise e
+            # Fall through to normal compilation
+
     try: # pylint: disable=too-many-nested-blocks
         # Make sure we can find the necessary compiler binaries.
         if os.name == 'nt' and os.system("where cl.exe >nul 2>nul") != 0:
             compiler_bindir = _find_compiler_bindir()
+            print(compiler_bindir)
             if compiler_bindir is None:
                 raise RuntimeError(f'Could not find MSVC/GCC/CLANG installation on this computer. Check _find_compiler_bindir() in "{__file__}".')
             os.environ['PATH'] += ';' + compiler_bindir
@@ -104,10 +141,17 @@ def get_plugin(module_name, sources, **build_kwargs):
                     # wait until done and continue.
                     baton.wait()
             digest_sources = [os.path.join(digest_build_dir, os.path.basename(x)) for x in sources]
+            
             torch.utils.cpp_extension.load(name=module_name, build_directory=build_dir,
+                extra_include_paths=extra_includes,
+                    extra_ldflags=extra_link_args,
+
                 verbose=verbose_build, sources=digest_sources, **build_kwargs)
         else:
-            torch.utils.cpp_extension.load(name=module_name, verbose=verbose_build, sources=sources, **build_kwargs)
+            torch.utils.cpp_extension.load(name=module_name, verbose=verbose_build, 
+                extra_include_paths=extra_includes,
+                extra_ldflags=extra_link_args,
+            sources=sources, **build_kwargs)
         module = importlib.import_module(module_name)
 
     except:
